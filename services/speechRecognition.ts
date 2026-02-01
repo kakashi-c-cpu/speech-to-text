@@ -30,56 +30,64 @@ export function createSpeechSession(params: {
 
   let rec: any = null;
 
+  // ✅ nhớ "mốc" final đã commit để không emit lại
+  let lastFinalIndex = 0;
+
   const start = () => {
     if (!Ctor) {
       params.onError?.("Trình duyệt không hỗ trợ Web Speech API (hãy dùng Chrome/Edge).");
       return;
     }
 
-    // tạo instance mới mỗi lần start để tránh trạng thái lỗi
     rec = new Ctor();
     rec.lang = params.lang ?? "vi-VN";
     rec.continuous = true;
     rec.interimResults = true;
     rec.maxAlternatives = 1;
 
+    // reset mốc mỗi lần start
+    lastFinalIndex = 0;
+
     rec.onstart = () => params.onState?.(true);
 
     rec.onresult = (event: any) => {
-      const finals: TranscriptItem[] = [];
+      const out: TranscriptItem[] = [];
       let newestInterim = "";
 
-      for (let i = event.resultIndex; i < event.results.length; i++) {
+      // Duyệt tất cả results hiện có để ổn định (engine đôi khi trả resultIndex "lạ")
+      for (let i = 0; i < event.results.length; i++) {
         const r = event.results[i];
         const text = (r?.[0]?.transcript ?? "").trim();
         if (!text) continue;
 
         if (r.isFinal) {
-          finals.push({
-            id: `${Date.now()}_${i}_${Math.random().toString(16).slice(2)}`,
-            text,
-            isFinal: true,
-            ts: Date.now(),
-          });
+          // ✅ chỉ lấy final mới (chưa commit)
+          if (i >= lastFinalIndex) {
+            out.push({
+              // id ổn định theo index + time hiện tại cũng được
+              id: `final_${i}_${Date.now()}`,
+              text,
+              isFinal: true,
+              ts: Date.now(),
+            });
+            // cập nhật mốc: đã commit tới i
+            lastFinalIndex = i + 1;
+          }
         } else {
-          // chỉ giữ interim mới nhất trong event
+          // chỉ giữ interim mới nhất
           newestInterim = text;
         }
       }
 
-      const out: TranscriptItem[] = [
-        ...finals,
-        ...(newestInterim
-          ? [
-              {
-                id: `${Date.now()}_interim_${Math.random().toString(16).slice(2)}`,
-                text: newestInterim,
-                isFinal: false,
-                ts: Date.now(),
-              },
-            ]
-          : []),
-      ];
+      // nếu muốn vẫn gửi interim (App bạn đang filter final nên không ảnh hưởng)
+      if (newestInterim) {
+        out.push({
+          id: `interim_${Date.now()}`,
+          text: newestInterim,
+          isFinal: false,
+          ts: Date.now(),
+        });
+      }
 
       if (out.length) params.onData(out);
     };
