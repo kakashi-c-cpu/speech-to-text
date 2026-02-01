@@ -20,21 +20,49 @@ export type SpeechSession = {
 };
 
 export function createSpeechSession(params: {
-  lang?: string; // "vi-VN"
-  onData: (items: TranscriptItem[]) => void; // trả: [final..., interim(last)]
+  lang?: string;
+  onData: (items: TranscriptItem[]) => void; // sẽ trả: [final] hoặc [interim]
   onError?: (msg: string) => void;
   onState?: (listening: boolean) => void;
+  pauseMs?: number; // ✅ thời gian im lặng để chốt (default 700ms)
 }): SpeechSession {
   const Ctor = getCtor();
   const isSupported = !!Ctor;
 
   let rec: any = null;
 
-  // ✅ chặn lặp theo index (desktop)
-  let lastFinalIndex = 0;
+  // debounce timer
+  let t: any = null;
+  const pauseMs = params.pauseMs ?? 700;
 
-  // ✅ chặn lặp theo nội dung (mobile)
-  let lastFinalText = "";
+  // buffer câu hiện tại
+  let latestText = ""; // text mới nhất (interim hoặc final)
+  let lastCommitted = ""; // text đã commit gần nhất (để chống commit lại y chang)
+
+  const clearTimer = () => {
+    if (t) {
+      clearTimeout(t);
+      t = null;
+    }
+  };
+
+  const commitIfNeeded = () => {
+    clearTimer();
+    const finalText = (latestText || "").trim();
+    if (!finalText) return;
+    if (finalText === lastCommitted) return; // ✅ chống lặp
+
+    lastCommitted = finalText;
+
+    params.onData([
+      {
+        id: `final_${Date.now()}`,
+        text: finalText,
+        isFinal: true,
+        ts: Date.now(),
+      },
+    ]);
+  };
 
   const start = () => {
     if (!Ctor) {
@@ -42,76 +70,51 @@ export function createSpeechSession(params: {
       return;
     }
 
-    // tạo instance mới mỗi lần start để tránh trạng thái lỗi
     rec = new Ctor();
     rec.lang = params.lang ?? "vi-VN";
     rec.continuous = true;
     rec.interimResults = true;
     rec.maxAlternatives = 1;
 
-    // reset mốc mỗi lần start
-    lastFinalIndex = 0;
-    lastFinalText = "";
+    // reset
+    clearTimer();
+    latestText = "";
+    lastCommitted = "";
 
     rec.onstart = () => params.onState?.(true);
 
     rec.onresult = (event: any) => {
-      const out: TranscriptItem[] = [];
-      let newestInterim = "";
+      let best = "";
 
-      // Duyệt tất cả results hiện có để ổn định (mobile đôi khi trả resultIndex "kỳ")
+      // Lấy transcript "mới nhất" trong toàn bộ results
       for (let i = 0; i < event.results.length; i++) {
         const r = event.results[i];
-        const raw = (r?.[0]?.transcript ?? "").trim();
-        if (!raw) continue;
+        const text = (r?.[0]?.transcript ?? "").trim();
+        if (!text) continue;
 
-        if (r.isFinal) {
-          // 1) chặn lặp theo index
-          if (i < lastFinalIndex) continue;
-
-          // 2) chặn lặp theo nội dung + chỉ commit phần tăng thêm
-          let toCommit = raw;
-
-          // Nếu raw mới là "mở rộng" của raw cũ: "alo" -> "alo 1" -> "alo 1 2"
-          if (lastFinalText && raw.startsWith(lastFinalText)) {
-            toCommit = raw.slice(lastFinalText.length).trim();
-          } else {
-            // Trường hợp engine bắn y chang nhiều lần
-            if (raw === lastFinalText) {
-              lastFinalIndex = i + 1;
-              continue;
-            }
-          }
-
-          // update state
-          lastFinalText = raw;
-          lastFinalIndex = i + 1;
-
-          if (!toCommit) continue;
-
-          out.push({
-            id: `final_${i}_${Date.now()}`,
-            text: toCommit,
-            isFinal: true,
-            ts: Date.now(),
-          });
-        } else {
-          // chỉ giữ interim mới nhất
-          newestInterim = raw;
-        }
+        // lấy cái cuối cùng (thường là câu đang nói / vừa nhận)
+        best = text;
       }
 
-      // nếu muốn vẫn gửi interim (App đang filter final nên không ảnh hưởng)
-      if (newestInterim) {
-        out.push({
+      if (!best) return;
+
+      latestText = best;
+
+      // ✅ emit interim để UI có thể hiển thị realtime (tuỳ App có dùng hay không)
+      params.onData([
+        {
           id: `interim_${Date.now()}`,
-          text: newestInterim,
+          text: latestText,
           isFinal: false,
           ts: Date.now(),
-        });
-      }
+        },
+      ]);
 
-      if (out.length) params.onData(out);
+      // ✅ debounce: im lặng pauseMs thì commit 1 lần
+      clearTimer();
+      t = setTimeout(() => {
+        commitIfNeeded();
+      }, pauseMs);
     };
 
     rec.onerror = (e: any) => {
@@ -120,7 +123,11 @@ export function createSpeechSession(params: {
     };
 
     rec.onend = () => {
+      // nếu đang có câu dở dang, chốt luôn khi kết thúc
+      commitIfNeeded();
+
       params.onState?.(false);
+      clearTimer();
       rec = null;
     };
 
@@ -135,6 +142,7 @@ export function createSpeechSession(params: {
 
   const stop = () => {
     try {
+      // stop -> onend sẽ commitIfNeeded()
       rec?.stop?.();
     } catch (err: any) {
       params.onError?.(`Không stop được: ${err?.message ?? String(err)}`);

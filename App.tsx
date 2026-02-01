@@ -1,18 +1,19 @@
 import { useMemo, useRef, useState } from "react";
 import { createSpeechSession } from "./services/speechRecognition";
+import type { TranscriptItem } from "./types";
 
 export default function App() {
   const [lang, setLang] = useState("vi-VN");
   const [listening, setListening] = useState(false);
   const [error, setError] = useState("");
 
-  // Chỉ lưu text final
-  const [text, setText] = useState("");
+  const [finalText, setFinalText] = useState(""); // ✅ chỉ câu đã chốt
+  const [live, setLive] = useState(""); // ✅ đang nói
 
   const sessionRef = useRef<ReturnType<typeof createSpeechSession> | null>(null);
 
   const isSupported = useMemo(() => {
-    const s = createSpeechSession({ lang: "vi-VN", onData: () => { } });
+    const s = createSpeechSession({ lang: "vi-VN", onData: () => {} });
     return s.isSupported;
   }, []);
 
@@ -21,17 +22,20 @@ export default function App() {
 
     sessionRef.current = createSpeechSession({
       lang,
-      onData: (items) => {
-        // ✅ chỉ lấy final
-        const finals = items
-          .filter((x) => x.isFinal)
-          .map((x) => (x.text ?? "").trim())
-          .filter(Boolean);
+      pauseMs: 700, // ✅ chỉnh 500-1000 tuỳ thích
+      onData: (items: TranscriptItem[]) => {
+        const last = items[items.length - 1];
+        if (!last) return;
 
-        if (!finals.length) return;
+        if (last.isFinal) {
+          const t = (last.text ?? "").trim();
+          if (!t) return;
 
-        // Append final vào textarea (mỗi cụm 1 dòng)
-        setText((prev) => (prev ? `${prev}\n${finals.join("\n")}` : finals.join("\n")));
+          setFinalText((prev) => (prev ? `${prev}\n${t}` : t));
+          setLive(""); // clear live khi đã chốt
+        } else {
+          setLive((last.text ?? "").trim());
+        }
       },
       onError: (msg) => setError(msg),
       onState: (on) => setListening(on),
@@ -40,22 +44,24 @@ export default function App() {
     sessionRef.current.start();
   };
 
-  const stop = () => {
-    sessionRef.current?.stop();
-  };
+  const stop = () => sessionRef.current?.stop();
 
   const clear = () => {
-    setText("");
+    setFinalText("");
+    setLive("");
     setError("");
   };
 
   const copyAll = async () => {
     try {
-      await navigator.clipboard.writeText(text.trim());
+      const combined = `${finalText}${live ? `\n${live}` : ""}`.trim();
+      await navigator.clipboard.writeText(combined);
     } catch {
       setError("Copy thất bại (trình duyệt chặn Clipboard).");
     }
   };
+
+  const display = `${finalText}${live ? `\n${live}` : ""}`.trimStart();
 
   return (
     <div style={{ maxWidth: 900, margin: "24px auto", padding: 16, fontFamily: "system-ui" }}>
@@ -120,10 +126,11 @@ export default function App() {
       )}
 
       <div style={{ marginBottom: 8, opacity: 0.7 }}>{listening ? "Đang nghe..." : "Đang dừng."}</div>
+
       <textarea
-        value={text}
+        value={display}
         readOnly
-        placeholder="Bấm Start rồi nói... (chỉ hiện khi hệ thống 'chốt' câu)"
+        placeholder="Bấm Start rồi nói... (pause ~700ms sẽ chốt thành 1 dòng)"
         style={{
           width: "100%",
           minHeight: 360,
@@ -137,8 +144,7 @@ export default function App() {
       />
 
       <div style={{ marginTop: 12, opacity: 0.75 }}>
-        Tip: Nếu bạn thấy “ra chữ chậm” là do chỉ hiện <code>final</code>. Muốn ra chữ ngay khi đang nói thì phải dùng{" "}
-        <code>interim</code>.
+        Tip: Mobile sẽ “chốt” 1 câu khi bạn ngừng nói khoảng <code>pauseMs</code> (mặc định 700ms).
       </div>
     </div>
   );
