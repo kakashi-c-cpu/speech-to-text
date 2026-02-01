@@ -33,7 +33,7 @@ export default function App() {
         if (last.isFinal) {
           // ✅ Bạn muốn bỏ final => khi service commit final thì mình clear live
           // (tuỳ bạn: có thể không clear nếu muốn giữ dòng cuối trên màn hình)
-          setLive("");
+          
           return;
         }
 
