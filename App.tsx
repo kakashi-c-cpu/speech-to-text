@@ -12,7 +12,7 @@ export default function App() {
   const sessionRef = useRef<ReturnType<typeof createSpeechSession> | null>(null);
 
   const isSupported = useMemo(() => {
-    const s = createSpeechSession({ lang: "vi-VN", onData: () => {} });
+    const s = createSpeechSession({ lang: "vi-VN", onData: () => { } });
     return s.isSupported;
   }, []);
 
@@ -23,7 +23,11 @@ export default function App() {
       lang,
       onData: (items) => {
         // ✅ chỉ lấy final
-        const finals = items.filter((x) => x.isFinal).map((x) => x.text).filter(Boolean);
+        const finals = items
+          .filter((x) => x.isFinal)
+          .map((x) => (x.text ?? "").trim())
+          .filter(Boolean);
+
         if (!finals.length) return;
 
         // Append final vào textarea (mỗi cụm 1 dòng)
@@ -116,8 +120,6 @@ export default function App() {
       )}
 
       <div style={{ marginBottom: 8, opacity: 0.7 }}>{listening ? "Đang nghe..." : "Đang dừng."}</div>
-
-      {/* ✅ Chỉ hiện chữ final */}
       <textarea
         value={text}
         readOnly
@@ -135,7 +137,8 @@ export default function App() {
       />
 
       <div style={{ marginTop: 12, opacity: 0.75 }}>
-        Tip: Nếu bạn thấy “ra chữ chậm” là do chỉ hiện <code>final</code>. Muốn ra chữ ngay khi đang nói thì phải dùng <code>interim</code>.
+        Tip: Nếu bạn thấy “ra chữ chậm” là do chỉ hiện <code>final</code>. Muốn ra chữ ngay khi đang nói thì phải dùng{" "}
+        <code>interim</code>.
       </div>
     </div>
   );

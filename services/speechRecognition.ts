@@ -30,8 +30,11 @@ export function createSpeechSession(params: {
 
   let rec: any = null;
 
-  // ✅ nhớ "mốc" final đã commit để không emit lại
+  // ✅ chặn lặp theo index (desktop)
   let lastFinalIndex = 0;
+
+  // ✅ chặn lặp theo nội dung (mobile)
+  let lastFinalText = "";
 
   const start = () => {
     if (!Ctor) {
@@ -39,6 +42,7 @@ export function createSpeechSession(params: {
       return;
     }
 
+    // tạo instance mới mỗi lần start để tránh trạng thái lỗi
     rec = new Ctor();
     rec.lang = params.lang ?? "vi-VN";
     rec.continuous = true;
@@ -47,6 +51,7 @@ export function createSpeechSession(params: {
 
     // reset mốc mỗi lần start
     lastFinalIndex = 0;
+    lastFinalText = "";
 
     rec.onstart = () => params.onState?.(true);
 
@@ -54,32 +59,49 @@ export function createSpeechSession(params: {
       const out: TranscriptItem[] = [];
       let newestInterim = "";
 
-      // Duyệt tất cả results hiện có để ổn định (engine đôi khi trả resultIndex "lạ")
+      // Duyệt tất cả results hiện có để ổn định (mobile đôi khi trả resultIndex "kỳ")
       for (let i = 0; i < event.results.length; i++) {
         const r = event.results[i];
-        const text = (r?.[0]?.transcript ?? "").trim();
-        if (!text) continue;
+        const raw = (r?.[0]?.transcript ?? "").trim();
+        if (!raw) continue;
 
         if (r.isFinal) {
-          // ✅ chỉ lấy final mới (chưa commit)
-          if (i >= lastFinalIndex) {
-            out.push({
-              // id ổn định theo index + time hiện tại cũng được
-              id: `final_${i}_${Date.now()}`,
-              text,
-              isFinal: true,
-              ts: Date.now(),
-            });
-            // cập nhật mốc: đã commit tới i
-            lastFinalIndex = i + 1;
+          // 1) chặn lặp theo index
+          if (i < lastFinalIndex) continue;
+
+          // 2) chặn lặp theo nội dung + chỉ commit phần tăng thêm
+          let toCommit = raw;
+
+          // Nếu raw mới là "mở rộng" của raw cũ: "alo" -> "alo 1" -> "alo 1 2"
+          if (lastFinalText && raw.startsWith(lastFinalText)) {
+            toCommit = raw.slice(lastFinalText.length).trim();
+          } else {
+            // Trường hợp engine bắn y chang nhiều lần
+            if (raw === lastFinalText) {
+              lastFinalIndex = i + 1;
+              continue;
+            }
           }
+
+          // update state
+          lastFinalText = raw;
+          lastFinalIndex = i + 1;
+
+          if (!toCommit) continue;
+
+          out.push({
+            id: `final_${i}_${Date.now()}`,
+            text: toCommit,
+            isFinal: true,
+            ts: Date.now(),
+          });
         } else {
           // chỉ giữ interim mới nhất
-          newestInterim = text;
+          newestInterim = raw;
         }
       }
 
-      // nếu muốn vẫn gửi interim (App bạn đang filter final nên không ảnh hưởng)
+      // nếu muốn vẫn gửi interim (App đang filter final nên không ảnh hưởng)
       if (newestInterim) {
         out.push({
           id: `interim_${Date.now()}`,
