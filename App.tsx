@@ -7,8 +7,8 @@ export default function App() {
   const [listening, setListening] = useState(false);
   const [error, setError] = useState("");
 
-  const [finalText, setFinalText] = useState(""); // ✅ chỉ câu đã chốt
-  const [live, setLive] = useState(""); // ✅ đang nói
+  // ✅ Chỉ giữ live (interim)
+  const [live, setLive] = useState("");
 
   const sessionRef = useRef<ReturnType<typeof createSpeechSession> | null>(null);
 
@@ -19,23 +19,26 @@ export default function App() {
 
   const start = () => {
     setError("");
+    sessionRef.current?.stop();
 
     sessionRef.current = createSpeechSession({
       lang,
-      pauseMs: 700, // ✅ chỉnh 500-1000 tuỳ thích
+      pauseMs: 700,
       onData: (items: TranscriptItem[]) => {
         const last = items[items.length - 1];
         if (!last) return;
 
-        if (last.isFinal) {
-          const t = (last.text ?? "").trim();
-          if (!t) return;
+        const text = (last.text ?? "").trim();
 
-          setFinalText((prev) => (prev ? `${prev}\n${t}` : t));
-          setLive(""); // clear live khi đã chốt
-        } else {
-          setLive((last.text ?? "").trim());
+        if (last.isFinal) {
+          // ✅ Bạn muốn bỏ final => khi service commit final thì mình clear live
+          // (tuỳ bạn: có thể không clear nếu muốn giữ dòng cuối trên màn hình)
+          setLive("");
+          return;
         }
+
+        // interim realtime
+        setLive(text);
       },
       onError: (msg) => setError(msg),
       onState: (on) => setListening(on),
@@ -47,21 +50,19 @@ export default function App() {
   const stop = () => sessionRef.current?.stop();
 
   const clear = () => {
-    setFinalText("");
     setLive("");
     setError("");
   };
 
   const copyAll = async () => {
     try {
-      const combined = `${finalText}${live ? `\n${live}` : ""}`.trim();
-      await navigator.clipboard.writeText(combined);
+      await navigator.clipboard.writeText((live ?? "").trim());
     } catch {
       setError("Copy thất bại (trình duyệt chặn Clipboard).");
     }
   };
 
-  const display = `${finalText}${live ? `\n${live}` : ""}`.trimStart();
+  const display = (live ?? "").trimStart();
 
   return (
     <div style={{ maxWidth: 900, margin: "24px auto", padding: 16, fontFamily: "system-ui" }}>
@@ -130,7 +131,7 @@ export default function App() {
       <textarea
         value={display}
         readOnly
-        placeholder="Bấm Start rồi nói... (pause ~700ms sẽ chốt thành 1 dòng)"
+        placeholder="Bấm Start rồi nói... (chỉ hiển thị realtime, không lưu final)"
         style={{
           width: "100%",
           minHeight: 360,
@@ -144,7 +145,7 @@ export default function App() {
       />
 
       <div style={{ marginTop: 12, opacity: 0.75 }}>
-        Tip: Mobile sẽ “chốt” 1 câu khi bạn ngừng nói khoảng <code>pauseMs</code> (mặc định 700ms).
+        Tip: Bản này chỉ giữ <code>live</code>. Khi pause đủ <code>pauseMs</code> thì sẽ clear.
       </div>
     </div>
   );

@@ -21,23 +21,32 @@ export type SpeechSession = {
 
 export function createSpeechSession(params: {
   lang?: string;
-  onData: (items: TranscriptItem[]) => void; // sẽ trả: [final] hoặc [interim]
+  onData: (items: TranscriptItem[]) => void;
   onError?: (msg: string) => void;
   onState?: (listening: boolean) => void;
-  pauseMs?: number; // ✅ thời gian im lặng để chốt (default 700ms)
+  pauseMs?: number; // default 700
 }): SpeechSession {
   const Ctor = getCtor();
   const isSupported = !!Ctor;
 
   let rec: any = null;
 
+  // ✅ token để ignore late events của session cũ
+  let runId = 0;
+
   // debounce timer
   let t: any = null;
   const pauseMs = params.pauseMs ?? 700;
 
-  // buffer câu hiện tại
-  let latestText = ""; // text mới nhất (interim hoặc final)
-  let lastCommitted = ""; // text đã commit gần nhất (để chống commit lại y chang)
+  // buffer
+  let latestText = "";
+  let lastCommitted = ""; // normalized
+
+  const norm = (s: string) =>
+    s
+      .trim()
+      .replace(/\s+/g, " ")
+      .replace(/[.。!?]+$/g, ""); // bỏ dấu cuối câu hay gây lặp
 
   const clearTimer = () => {
     if (t) {
@@ -46,12 +55,13 @@ export function createSpeechSession(params: {
     }
   };
 
-  const commitIfNeeded = () => {
-    clearTimer();
-    const finalText = (latestText || "").trim();
-    if (!finalText) return;
-    if (finalText === lastCommitted) return; // ✅ chống lặp
+  const commitIfNeeded = (myRunId: number) => {
+    if (myRunId !== runId) return;
 
+    const finalText = norm(latestText || "");
+    if (!finalText) return;
+
+    if (finalText === lastCommitted) return;
     lastCommitted = finalText;
 
     params.onData([
@@ -70,29 +80,41 @@ export function createSpeechSession(params: {
       return;
     }
 
+    runId += 1;
+    const myRunId = runId;
+
+    // stop instance cũ (nếu có)
+    try {
+      rec?.stop?.();
+    } catch {
+      // ignore
+    }
+
+    clearTimer();
+    latestText = "";
+    // ❗không reset lastCommitted để tránh lặp do onend trễ
+
     rec = new Ctor();
     rec.lang = params.lang ?? "vi-VN";
     rec.continuous = true;
     rec.interimResults = true;
     rec.maxAlternatives = 1;
 
-    // reset
-    clearTimer();
-    latestText = "";
-    lastCommitted = "";
-
-    rec.onstart = () => params.onState?.(true);
+    rec.onstart = () => {
+      if (myRunId !== runId) return;
+      params.onState?.(true);
+    };
 
     rec.onresult = (event: any) => {
+      if (myRunId !== runId) return;
+
       let best = "";
 
-      // Lấy transcript "mới nhất" trong toàn bộ results
+      // lấy transcript mới nhất
       for (let i = 0; i < event.results.length; i++) {
         const r = event.results[i];
         const text = (r?.[0]?.transcript ?? "").trim();
         if (!text) continue;
-
-        // lấy cái cuối cùng (thường là câu đang nói / vừa nhận)
         best = text;
       }
 
@@ -100,7 +122,7 @@ export function createSpeechSession(params: {
 
       latestText = best;
 
-      // ✅ emit interim để UI có thể hiển thị realtime (tuỳ App có dùng hay không)
+      // emit interim để UI hiển thị realtime
       params.onData([
         {
           id: `interim_${Date.now()}`,
@@ -110,21 +132,22 @@ export function createSpeechSession(params: {
         },
       ]);
 
-      // ✅ debounce: im lặng pauseMs thì commit 1 lần
+      // debounce: pauseMs im lặng => commit 1 lần
       clearTimer();
-      t = setTimeout(() => {
-        commitIfNeeded();
-      }, pauseMs);
+      t = setTimeout(() => commitIfNeeded(myRunId), pauseMs);
     };
 
     rec.onerror = (e: any) => {
+      if (myRunId !== runId) return;
       const code = e?.error ? String(e.error) : "unknown";
       params.onError?.(`SpeechRecognition error: ${code}`);
     };
 
     rec.onend = () => {
-      // nếu đang có câu dở dang, chốt luôn khi kết thúc
-      commitIfNeeded();
+      if (myRunId !== runId) return;
+
+      // ✅ QUAN TRỌNG: KHÔNG commit ở đây nữa để tránh lặp 1 lần sau khi đã commit bằng pause
+      // commitIfNeeded(myRunId);
 
       params.onState?.(false);
       clearTimer();
@@ -134,15 +157,17 @@ export function createSpeechSession(params: {
     try {
       rec.start();
     } catch (err: any) {
+      if (myRunId !== runId) return;
       params.onError?.(`Không start được: ${err?.message ?? String(err)}`);
       params.onState?.(false);
+      clearTimer();
       rec = null;
     }
   };
 
   const stop = () => {
+    // stop sẽ trigger onend, nhưng onend không commit nữa => không bị lặp
     try {
-      // stop -> onend sẽ commitIfNeeded()
       rec?.stop?.();
     } catch (err: any) {
       params.onError?.(`Không stop được: ${err?.message ?? String(err)}`);
