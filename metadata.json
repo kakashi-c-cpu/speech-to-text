@@ -1,0 +1,8 @@
+
+{
+  "name": "Gemini Live Transcriber",
+  "description": "A high-performance real-time speech-to-text application powered by Gemini 2.5 Flash Native Audio. It converts spoken Vietnamese or English into text instantly with high accuracy.",
+  "requestFramePermissions": [
+    "microphone"
+  ]
+}
